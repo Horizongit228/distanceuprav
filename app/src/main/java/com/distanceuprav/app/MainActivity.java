@@ -370,11 +370,7 @@ public class MainActivity extends Activity {
     }
 
     private void refreshNetwork() {
-        WolUtils.NetworkDetails network = WolUtils.network(this);
-        networkText.setText(network == null
-                ? "⚠ Не удалось определить локальную IPv4-сеть. Проверь домашний Wi-Fi и VPN."
-                : "Телефон: " + network.ip + "/" + network.prefix
-                  + "\nBroadcast: " + network.broadcast + "   •   UDP " + WolUtils.PORT);
+        networkText.setText(WolUtils.routeDescription(this));
     }
 
     private void saveAndValidate() {
@@ -441,9 +437,10 @@ public class MainActivity extends Activity {
         refreshSummaries();
         refreshNetwork();
         if (WolUtils.network(this) == null) {
-            setAction("⚠ Нет локальной IPv4-сети. Подключись к домашнему Wi-Fi.", WARNING);
+            setAction("⚠ Нет локальной IPv4-сети. Для WoL подключись к домашнему Wi-Fi. Из другой сети нужен WoL-ретранслятор дома.", WARNING);
             return;
         }
+        final boolean vpnWasEnabled = WolUtils.vpnActive(this);
         powerButton.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
         powerButton.setEnabled(false);
         powerButton.animate().scaleX(0.95f).scaleY(0.95f).setDuration(110)
@@ -454,7 +451,9 @@ public class MainActivity extends Activity {
                 // Identical functionality to 0.2.2: 3 Magic Packets to UDP 9.
                 WolUtils.send(getApplicationContext(), mac);
                 main.post(() -> {
-                    setAction("✓ Три Magic Packet отправлены. Ждём ответа компьютера…", SUCCESS);
+                    setAction(vpnWasEnabled
+                            ? "✓ 3 Magic Packet отправлены через локальную сеть, минуя VPN. Ожидаем запуск ПК…"
+                            : "✓ Три Magic Packet отправлены. Ждём ответа компьютера…", SUCCESS);
                     powerButton.setEnabled(true);
                     main.postDelayed(() -> checkPcStatus(false), 2200);
                     main.postDelayed(() -> checkPcStatus(false), 6000);
@@ -462,7 +461,8 @@ public class MainActivity extends Activity {
                 });
             } catch(Exception e) {
                 main.post(() -> {
-                    setAction("⚠ Ошибка Wake-on-LAN: " + e.getMessage(), WARNING);
+                    setAction("⚠ Не удалось отправить WoL: " + e.getMessage() +
+                            (vpnWasEnabled ? " Возможно, VPN запрещает обход для домашней сети. Попробуй разрешить доступ к локальным устройствам в настройках VPN." : ""), WARNING);
                     powerButton.setEnabled(true);
                 });
             }
@@ -493,7 +493,22 @@ public class MainActivity extends Activity {
         pcState.setBackground(shape(0xFF343A5A, 30, 0, 0));
         if (fromButton) setAction("⏳ Проверяю доступность " + ip + "…", WHITE);
         worker.execute(() -> {
-            boolean online = WolUtils.isOnline(ip);
+            boolean pingOnline = WolUtils.isOnline(getApplicationContext(), ip);
+            boolean viaAgent = false;
+            if (!pingOnline) {
+                AgentStore.Config pair = new AgentStore(getApplicationContext()).read();
+                if (pair != null && ip.equals(pair.ip)) {
+                    try {
+                        org.json.JSONObject status = AgentClient.request(getApplicationContext(),
+                                pair, "GET", "/v1/status", null);
+                        viaAgent = status.optBoolean("ok", false);
+                    } catch (Exception ignored) {
+                        // Ping and the agent may both be blocked; don't infer PC power state.
+                    }
+                }
+            }
+            final boolean online = pingOnline || viaAgent;
+            final boolean verifiedAgent = viaAgent;
             main.post(() -> {
                 checking.set(false);
                 checkButton.setEnabled(true);
@@ -504,8 +519,10 @@ public class MainActivity extends Activity {
                         android.text.format.DateFormat.getTimeFormat(this).format(new Date()));
                 if (fromButton) {
                     setAction(online
-                        ? "✓ Компьютер " + ip + " отвечает в локальной сети."
-                        : "⚠ Нет ответа от " + ip + ". Это не обязательно означает выключение ПК: ping может блокироваться.", online ? SUCCESS : WARNING);
+                        ? (verifiedAgent ? "✓ Компьютер " + ip + " отвечает через защищённый Windows-агент."
+                                : "✓ Компьютер " + ip + " отвечает на ping по доступному сетевому маршруту.")
+                        : "⚠ Нет ответа от " + ip + ". VPN может блокировать доступ к локальной сети, Windows — ICMP. Это не означает, что ПК выключен.",
+                        online ? SUCCESS : WARNING);
                 }
             });
         });
