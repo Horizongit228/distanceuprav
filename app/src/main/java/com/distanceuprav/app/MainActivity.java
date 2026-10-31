@@ -143,27 +143,51 @@ public class MainActivity extends Activity {
         networkStatus = label("Определяю локальную сеть…", 12, muted);
         add(root, networkStatus, 12);
 
-        add(root, label("Подключение через SofaPower Hub", 16, Color.WHITE), 28);
-        Button scanButton = button(root, "▣  Сканировать QR SofaPower Hub", accent, 12);
-        Button pasteButton = button(root, "⎘  Вставить код связи из буфера", card, 10);
-        add(root, label("SofaPower Hub на Windows показывает QR-код с именем, MAC и IPv4 компьютера. После считывания эти данные сохраняются на телефоне.", 12, muted), 10);
 
-        add(root, label("MAC-адрес Ethernet", 14, 0xFFD8E1F5), 28);
+        add(root, label("Подключение без QR • как в старом SofaPower", 16, Color.WHITE), 28);
+        add(root, label("Нужен MAC-адрес Ethernet-адаптера ПК. Телефон и компьютер должны быть в одной домашней сети. IP компьютера нужен только для проверки статуса.", 12, muted), 10);
+
+        add(root, label("MAC-адрес Ethernet", 14, 0xFFD8E1F5), 18);
         macInput = field(root, "AA:BB:CC:DD:EE:FF", pref("mac"), 8);
-        add(root, label("Локальный IPv4 компьютера", 14, 0xFFD8E1F5), 18);
+        Button clipboardMac = button(root, "⎘  Вставить MAC из буфера", card, 10);
+        add(root, label("Локальный IPv4 компьютера (необязательно для включения)", 14, 0xFFD8E1F5), 18);
         ipInput = field(root, "192.168.1.100", pref("host"), 8);
 
-        Button saveButton = button(root, "✓  Сохранить данные ПК", card, 16);
+        Button saveButton = button(root, "✓  Сохранить настройки", card, 16);
         powerButton = button(root, "⏻  Включить компьютер", accent, 25);
         checkButton = button(root, "◎  Проверить доступность", card, 12);
 
-        actionStatus = label("Проверка работает через ping и резервный метод isReachable, как в SofaPower. Порт RDP 3389 не нужен.", 13, 0xFFD8E1F5);
+        actionStatus = label("Для включения нужен только MAC. Проверка доступности использует IPv4 и ping, который может блокироваться Windows.", 13, 0xFFD8E1F5);
         actionStatus.setMinHeight(dp(68));
         actionStatus.setPadding(dp(14), dp(14), dp(14), dp(14));
         actionStatus.setBackground(background(card));
         add(root, actionStatus, 14);
-        add(root, label("Важно: если ПК не отвечает на ping, это ещё не доказывает, что он выключен. Windows может блокировать ICMP.", 12, muted), 12);
+        add(root, label("Важно: отсутствие ответа на ping не доказывает, что ПК выключен. Отправка Wake-on-LAN не требует открытого TCP-порта.", 12, muted), 12);
 
+        add(root, label("Дополнительно: QR новой версии SofaPower Hub", 15, Color.WHITE), 30);
+        add(root, label("В твоей старой версии SofaPower QR отсутствует — эти кнопки можно не использовать.", 12, muted), 8);
+        Button scanButton = button(root, "▣  Сканировать QR нового Hub", card, 12);
+        Button pasteButton = button(root, "⎘  Вставить QR-код из буфера", card, 10);
+
+
+        clipboardMac.setOnClickListener(v -> {
+            try {
+                ClipboardManager manager = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                ClipData clip = manager == null ? null : manager.getPrimaryClip();
+                if (clip == null || clip.getItemCount() == 0) throw new IllegalArgumentException("Буфер обмена пуст");
+                CharSequence value = clip.getItemAt(0).coerceToText(this);
+                String raw = value == null ? "" : value.toString();
+                java.util.regex.Matcher match = java.util.regex.Pattern
+                        .compile("(?i)(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}").matcher(raw);
+                String parsed = match.find() ? WolUtils.normalizeMac(match.group()) : WolUtils.normalizeMac(raw);
+                if (parsed == null) throw new IllegalArgumentException("MAC-адрес не найден");
+                macInput.setText(parsed);
+                saveSettings();
+                actionStatus.setText("✓ MAC скопирован. IP не требуется для Wake-on-LAN.");
+            } catch (Exception error) {
+                actionStatus.setText("⚠ Не удалось прочитать MAC: " + error.getMessage());
+            }
+        });
         scanButton.setOnClickListener(v -> scanHubQr());
         pasteButton.setOnClickListener(v -> pastePairing());
         saveButton.setOnClickListener(v -> {
@@ -174,16 +198,18 @@ public class MainActivity extends Activity {
                 actionStatus.setText("⚠ Укажи корректный MAC Ethernet-адаптера.");
                 return;
             }
-            if (!WolUtils.isValidIpv4(ip)) {
+            if (!ip.isEmpty() && !WolUtils.isValidIpv4(ip)) {
                 ipInput.setError("Неверный IPv4");
-                actionStatus.setText("⚠ Укажи локальный IPv4 компьютера.");
+                actionStatus.setText("⚠ Проверь IPv4 компьютера или оставь поле пустым.");
                 return;
             }
             macInput.setText(normalized);
             saveSettings();
-            actionStatus.setText("✓ Настройки сохранены");
+            actionStatus.setText(ip.isEmpty()
+                    ? "✓ MAC сохранён. Wake-on-LAN готов; для проверки состояния укажи IPv4."
+                    : "✓ MAC и IPv4 сохранены. Можно проверить доступность.");
             refreshNetwork();
-            checkPcStatus(false);
+            if (!ip.isEmpty()) checkPcStatus(false);
         });
         powerButton.setOnClickListener(v -> wakePc());
         checkButton.setOnClickListener(v -> checkPcStatus(true));
