@@ -1,5 +1,7 @@
 package com.distanceuprav.app;
 
+import android.content.Context;
+import android.net.Network;
 import android.net.Uri;
 import android.util.Base64;
 
@@ -67,8 +69,27 @@ public final class AgentClient {
     }
 
     public static JSONObject request(AgentStore.Config config, String method, String path, JSONObject payload) throws Exception {
+        return request(null, config, method, path, payload);
+    }
+
+    public static JSONObject request(Context context, AgentStore.Config config, String method, String path, JSONObject payload) throws Exception {
         if (config == null || !path.matches("/v1/[a-z/]+"))
             throw new IllegalArgumentException("Неизвестная команда");
+        Network local = context == null ? null : WolUtils.wifiForHost(context, config.ip);
+        if (local != null) {
+            try {
+                return requestOnce(config, method, path, payload, local);
+            } catch(java.io.IOException directFailed) {
+                // Some VPNs prohibit bypassing the tunnel. A VPN with a LAN route
+                // might still reach the PC; retry on its default route.
+                return requestOnce(config, method, path, payload, null);
+            }
+        }
+        return requestOnce(config, method, path, payload, null);
+    }
+
+    private static JSONObject requestOnce(AgentStore.Config config, String method, String path,
+                                          JSONObject payload, Network network) throws Exception {
         final byte[] required = hex(config.fingerprint);
         X509TrustManager pin = new X509TrustManager() {
             @Override public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
@@ -92,7 +113,7 @@ public final class AgentClient {
         SSLContext ssl = SSLContext.getInstance("TLS");
         ssl.init(null, new TrustManager[]{pin}, null);
         URL url = new URL("https://" + config.ip + ":" + config.port + path);
-        HttpsURLConnection c = (HttpsURLConnection) url.openConnection();
+        HttpsURLConnection c = (HttpsURLConnection) (network == null ? url.openConnection() : network.openConnection(url));
         c.setSSLSocketFactory(ssl.getSocketFactory());
         // The exact pinned certificate authenticates the agent; URL hostname must still be our selected IP.
         c.setHostnameVerifier((hostname, session) -> config.ip.equals(hostname));
