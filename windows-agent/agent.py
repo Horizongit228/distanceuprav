@@ -414,6 +414,7 @@ class Handler(BaseHTTPRequestHandler):
                 kind = pending["kind"]
                 until = pending["until"]
             self.reply(200, {"ok": True, "version": VERSION, "computer": socket.gethostname(),
+                             "agent_elevated": agent_elevated(),
                              "pending_power": kind, "power_at": until})
         elif path == "/v1/apps":
             self.reply(200, window_tracker.snapshot())
