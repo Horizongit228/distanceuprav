@@ -31,7 +31,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 PORT = 8765
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "DistanceUpravAgent"
 CONFIG_FILE = DATA_DIR / "config.json"
@@ -71,29 +71,91 @@ def load_identity():
     return token, fingerprint
 
 
+def _valid_lan_ipv4(address):
+    try:
+        ip = ipaddress.IPv4Address(address)
+        return ip.is_private and not ip.is_loopback and not ip.is_link_local and not ip.is_multicast
+    except ValueError:
+        return False
+
+
+def _score_adapter(row):
+    """Physical NIC and default gateway take priority over Docker/WSL adapters."""
+    combined = (str(row.get("interface", "")) + " " + str(row.get("description", ""))).lower()
+    virtual = any(word in combined for word in (
+        "vethernet", "hyper-v", "wsl", "docker", "virtual", "vmware",
+        "virtualbox", "loopback", "tailscale", "zerotier", "vpn", "tunnel"))
+    ip = ipaddress.IPv4Address(row["ip"])
+    return ((100 if row.get("physical") else 0)
+            + (40 if row.get("gateway") else 0)
+            + (20 if ip in ipaddress.IPv4Network("192.168.0.0/16") else 0)
+            + (10 if ip in ipaddress.IPv4Network("10.0.0.0/8") else 0)
+            - (200 if virtual else 0))
+
+
+def lan_addresses():
+    """Discover Windows IPv4 interfaces, preferring physical home LAN over vEthernet."""
+    items = []
+    ps = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$physical = @(Get-NetAdapter -Physical | ForEach-Object { $_.ifIndex })
+$rows = @(
+    Get-NetIPConfiguration -All | ForEach-Object {
+        $cfg = $_
+        if ($cfg.NetAdapter -and $cfg.NetAdapter.Status -eq 'Up') {
+            foreach ($address in @($cfg.IPv4Address)) {
+                if ($address -and $address.IPAddress) {
+                    [pscustomobject]@{
+                        ip = [string]$address.IPAddress
+                        interface = [string]$cfg.InterfaceAlias
+                        description = [string]$cfg.InterfaceDescription
+                        physical = ($cfg.InterfaceIndex -in $physical)
+                        gateway = ($null -ne $cfg.IPv4DefaultGateway)
+                    }
+                }
+            }
+        }
+    }
+)
+ConvertTo-Json -InputObject $rows -Compress -Depth 4
+"""
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, timeout=12,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if completed.returncode == 0 and completed.stdout.strip():
+            output = json.loads(completed.stdout.strip())
+            for row in (output if isinstance(output, list) else [output]):
+                if isinstance(row, dict) and _valid_lan_ipv4(row.get("ip", "")):
+                    items.append(row)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+
+    # Fallback if Windows networking cmdlets fail. Lower priority than physical NICs.
+    addresses = []
+    try:
+        addresses.extend(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("8.8.8.8", 80))  # no packet is sent
+            addresses.append(probe.getsockname()[0])
+    except OSError:
+        pass
+    for address in addresses:
+        if _valid_lan_ipv4(address) and not any(row["ip"] == address for row in items):
+            items.append({"ip": address, "interface": "Другой интерфейс",
+                          "description": "Определён системой",
+                          "physical": False, "gateway": False})
+    items.sort(key=lambda row: (-_score_adapter(row), row["ip"]))
+    return items
+
+
 def choose_lan_ip():
-    found = []
-    try:
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            probe.connect(("8.8.8.8", 80))  # no packets are actually sent
-            found.append(probe.getsockname()[0])
-        finally:
-            probe.close()
-    except OSError:
-        pass
-    try:
-        found += socket.gethostbyname_ex(socket.gethostname())[2]
-    except OSError:
-        pass
-    for address in found:
-        try:
-            ip = ipaddress.ip_address(address)
-            if isinstance(ip, ipaddress.IPv4Address) and ip.is_private and not ip.is_loopback:
-                return address
-        except ValueError:
-            pass
-    return "127.0.0.1"
+    addresses = lan_addresses()
+    return addresses[0]["ip"] if addresses else "127.0.0.1"
 
 
 def pairing_uri(ip, token, fingerprint):
@@ -303,52 +365,111 @@ def main():
         raise SystemExit("Агент запускается только на Windows 10/11")
     token, fingerprint = load_identity()
     server = start_server(token)
-    ip = choose_lan_ip()
-    url = pairing_uri(ip, token, fingerprint)
+    choices = lan_addresses()
 
     import tkinter as tk
-    from tkinter import messagebox
+    from tkinter import ttk, messagebox
     import qrcode
     from PIL import ImageTk
 
     root = tk.Tk()
-    root.title("DistanceUprav Agent 0.4.0")
-    root.geometry("540x760")
+    root.title("DistanceUprav Agent 0.4.1")
+    root.geometry("550x785")
     root.configure(bg="#111827")
     root.resizable(False, False)
 
     def label(value, size=11, color="#E5E7EB"):
-        widget = tk.Label(root, text=value, font=("Segoe UI", size), fg=color,
-                          bg="#111827", justify="center", wraplength=475)
-        widget.pack(pady=7)
-        return widget
+        item = tk.Label(root, text=value, font=("Segoe UI", size), fg=color,
+                        bg="#111827", wraplength=510, justify="center")
+        item.pack(pady=5)
+        return item
 
-    label("DistanceUprav • Windows Agent", 19, "#FFFFFF")
-    label("Работает в активном сеансе Windows. Только домашняя сеть.", 10, "#A5B4CF")
-    label("IP: " + ip + "     Порт: " + str(PORT), 12, "#99F6E4")
+    label("DistanceUprav • Windows Agent", 18, "#FFFFFF")
+    label("Выбери сетевой адрес ПК из той же сети, что и телефон.", 10, "#A5B4CF")
+    label("Например, для телефона 192.168.0.36 адрес ПК обычно 192.168.0.x.",
+          10, "#FCD34D")
 
-    qr = qrcode.QRCode(border=2, box_size=4, error_correction=qrcode.constants.ERROR_CORRECT_M)
-    qr.add_data(url)
-    qr.make(fit=True)
-    photo = ImageTk.PhotoImage(qr.make_image(fill_color="black", back_color="white").convert("RGB"))
-    box = tk.Label(root, image=photo, bg="#111827")
-    box.image = photo
-    box.pack(pady=12)
-    label("Отсканируй код кнопкой «Подключить агент» в Android.\n"
-          "QR содержит секрет доступа — никому его не отправляй.", 10, "#FCD34D")
-    label("Сертификат (SHA-256): " + fingerprint[:24] + "…", 9, "#A5B4CF")
-    label("Закрытие окон — только мягкое, с системными диалогами сохранения.\n"
-          "Выключение и перезапуск могут быть заблокированы несохранёнными файлами.",
-          10, "#C4CDDE")
+    ip_by_option = {
+        "{} — {}".format(row["ip"], row.get("interface", "Сеть")): row["ip"]
+        for row in choices
+    }
+    selected = tk.StringVar(value=next(iter(ip_by_option), "Нет сетевых адаптеров"))
+    picker = ttk.Combobox(root, textvariable=selected,
+                          values=list(ip_by_option), state="readonly", width=53)
+    picker.pack(pady=(8, 4))
 
-    def exit_agent():
+    manual_frame = tk.Frame(root, bg="#111827")
+    manual_frame.pack(pady=(4, 8))
+    manual_ip = tk.StringVar(value=next(iter(ip_by_option.values()), ""))
+    entry = tk.Entry(manual_frame, textvariable=manual_ip, font=("Segoe UI", 11),
+                     width=19)
+    entry.pack(side="left", padx=5)
+
+    ip_label = label("IP: не выбран", 12, "#99F6E4")
+    warning = label("QR-код пока не готов.", 10, "#FCD34D")
+    qr_image = tk.Label(root, bg="#111827")
+    qr_image.pack(pady=(0, 6))
+
+    def update_qr(ip):
+        if not _valid_lan_ipv4(ip):
+            warning.configure(text="Укажи локальный IPv4 компьютера.")
+            qr_image.configure(image="")
+            qr_image.image = None
+            return
+        ip_label.configure(text="Адрес агента: {}   •   порт {}".format(ip, PORT))
+        uri = pairing_uri(ip, token, fingerprint)
+        qr = qrcode.QRCode(border=2, box_size=4,
+                          error_correction=qrcode.constants.ERROR_CORRECT_M)
+        qr.add_data(uri)
+        qr.make(fit=True)
+        photo = ImageTk.PhotoImage(
+            qr.make_image(fill_color="black", back_color="white").convert("RGB"))
+        qr_image.configure(image=photo)
+        qr_image.image = photo
+        warning.configure(text="Новый QR готов. Переподключи агент в Android.",
+                          fg="#86EFAC")
+
+    def choose(event=None):
+        ip = ip_by_option.get(selected.get(), "")
+        if ip:
+            manual_ip.set(ip)
+            update_qr(ip)
+
+    def manual_apply():
+        ip = manual_ip.get().strip()
+        if not _valid_lan_ipv4(ip):
+            messagebox.showerror("Неправильный IP", "Нужен локальный IPv4 адрес ПК.")
+            return
+        if choices and ip not in (row["ip"] for row in choices):
+            ok = messagebox.askyesno(
+                "IP не обнаружен",
+                "Этот адрес не найден среди сетевых интерфейсов ПК. "
+                "Продолжить только если это действительно IPv4 компьютера?")
+            if not ok:
+                return
+        update_qr(ip)
+
+    tk.Button(manual_frame, text="Применить IP", command=manual_apply,
+              bg="#374151", fg="white", relief="flat", padx=9, pady=5).pack(side="left")
+    picker.bind("<<ComboboxSelected>>", choose)
+    choose()
+
+    label("Секретный QR показывай только своему телефону. "
+          "При выборе другого IP не нужно переустанавливать Windows-агент.",
+          10, "#FCD34D")
+    label("Сертификат SHA-256: " + fingerprint[:24] + "…",
+          9, "#A5B4CF")
+    label("Окна закрываются мягко. Несохранённые файлы могут требовать "
+          "подтверждения на самом компьютере.", 10, "#C4CDDE")
+
+    def stop():
         server.shutdown()
         root.destroy()
 
     tk.Button(root, text="Остановить агент", font=("Segoe UI", 11),
-              command=exit_agent, bg="#374151", fg="white", relief="flat",
-              padx=20, pady=9).pack(pady=11)
-    root.protocol("WM_DELETE_WINDOW", exit_agent)
+              command=stop, bg="#374151", fg="white",
+              relief="flat", padx=20, pady=9).pack(pady=9)
+    root.protocol("WM_DELETE_WINDOW", stop)
     root.mainloop()
 
 

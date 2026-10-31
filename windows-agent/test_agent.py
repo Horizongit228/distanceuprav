@@ -72,6 +72,27 @@ class AgentTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+
+    def test_physical_lan_is_preferred_over_virtual(self):
+        class FakeCompleted:
+            returncode = 0
+            stdout = json.dumps([
+                {"ip": "172.19.0.1", "interface": "vEthernet (WSL)",
+                 "description": "Hyper-V Virtual Ethernet Adapter",
+                 "physical": False, "gateway": False},
+                {"ip": "192.168.0.105", "interface": "Ethernet",
+                 "description": "Intel(R) Ethernet Controller",
+                 "physical": True, "gateway": True},
+            ])
+        with patch.object(agent.subprocess, "run", return_value=FakeCompleted()):
+            self.assertEqual(agent.choose_lan_ip(), "192.168.0.105")
+
+    def test_invalid_lan_addresses(self):
+        self.assertFalse(agent._valid_lan_ipv4("127.0.0.1"))
+        self.assertFalse(agent._valid_lan_ipv4("169.254.1.2"))
+        self.assertFalse(agent._valid_lan_ipv4("8.8.8.8"))
+        self.assertTrue(agent._valid_lan_ipv4("192.168.0.105"))
+
     def test_window_validation_rejects_malformed_input(self):
         with self.assertRaises(ValueError):
             agent.close_window("not-hex", 100)
