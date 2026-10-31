@@ -2,6 +2,10 @@ plugins { id 'com.android.application' }
 android {
     namespace 'com.distanceuprav.app'
     compileSdk 35
-    defaultConfig { applicationId 'com.distanceuprav.app'; minSdk 26; targetSdk 28; versionCode 3; versionName '0.1.2' }
+    defaultConfig { applicationId 'com.distanceuprav.app'; minSdk 26; targetSdk 28; versionCode 4; versionName '0.2.0' }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+
+dependencies {
+    implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'
 }
