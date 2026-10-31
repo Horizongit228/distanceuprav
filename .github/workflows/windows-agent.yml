@@ -1,0 +1,29 @@
+name: Build Windows Agent
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'windows-agent/**'
+      - '.github/workflows/windows-agent.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-agent:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r windows-agent/requirements.txt
+      - name: Syntax check
+        run: python -m py_compile windows-agent/agent.py
+      - name: Package Windows EXE
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name DistanceUpravAgent --collect-all cryptography --collect-all qrcode windows-agent/agent.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DistanceUprav-Windows-Agent
+          path: dist/DistanceUpravAgent.exe
+          if-no-files-found: error
