@@ -8,8 +8,8 @@ android {
         applicationId 'com.distanceuprav.app'
         minSdk 26
         targetSdk 28
-        versionCode 9
-        versionName '0.4.1'
+        versionCode 10
+        versionName '0.4.2'
     }
 
     // Development builds are signed with a persistent *public debug key*.
@@ -36,4 +36,5 @@ android {
 
 dependencies {
     implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'
+    testImplementation 'junit:junit:4.13.2'
 }
