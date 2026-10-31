@@ -575,9 +575,11 @@ public class MainActivity extends Activity {
         super.onResume();
         main.removeCallbacks(statusLoop);
         main.post(statusLoop);
+        if (agentPanel != null) agentPanel.onForeground();
     }
 
     @Override protected void onPause() {
+        if (agentPanel != null) agentPanel.onBackground();
         main.removeCallbacks(statusLoop);
         super.onPause();
     }
