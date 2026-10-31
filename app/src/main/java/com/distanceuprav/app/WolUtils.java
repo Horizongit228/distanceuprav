@@ -68,7 +68,8 @@ public final class WolUtils {
         }
         if (active != null) {
             NetworkCapabilities caps = cm.getNetworkCapabilities(active);
-            if (caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+            if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                    && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
                 NetworkDetails fallback = networkInfo(cm, active, false);
                 if (fallback != null) return fallback;
             }
