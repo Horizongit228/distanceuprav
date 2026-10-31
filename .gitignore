@@ -1,0 +1,9 @@
+# Local Android/Gradle files
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+
+# CI reconstructs this from the committed development-only base64 fixture.
+app/debug.keystore
