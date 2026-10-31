@@ -1,9 +1,37 @@
 plugins { id 'com.android.application' }
+
 android {
     namespace 'com.distanceuprav.app'
     compileSdk 35
-    defaultConfig { applicationId 'com.distanceuprav.app'; minSdk 26; targetSdk 28; versionCode 5; versionName '0.2.1' }
-    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+
+    defaultConfig {
+        applicationId 'com.distanceuprav.app'
+        minSdk 26
+        targetSdk 28
+        versionCode 6
+        versionName '0.2.2'
+    }
+
+    // Development builds are signed with a persistent *public debug key*.
+    // The keystore is decoded by CI before this Gradle task runs.
+    // Never use this certificate to publish trusted or production releases.
+    signingConfigs {
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
 }
 
 dependencies {
