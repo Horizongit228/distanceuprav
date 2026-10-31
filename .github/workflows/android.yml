@@ -43,6 +43,9 @@ jobs:
           chmod 600 app/debug.keystore
           keytool -list -keystore app/debug.keystore -storepass android -alias androiddebugkey >/dev/null
 
+      - name: Test network routing and MAC helpers
+        run: gradle --no-daemon :app:testDebugUnitTest
+
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
 
