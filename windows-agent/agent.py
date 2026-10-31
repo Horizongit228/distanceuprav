@@ -7,6 +7,7 @@ Run in the interactive Windows desktop session (NOT as a background Windows serv
 - Shutdown/restart WITHOUT /f and with /t 0 (any positive /t implies /f!)
 """
 import base64
+from collections import deque
 import ctypes
 from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
@@ -31,7 +32,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 PORT = 8765
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "DistanceUpravAgent"
 CONFIG_FILE = DATA_DIR / "config.json"
@@ -165,6 +166,102 @@ def pairing_uri(ip, token, fingerprint):
     return "distanceuprav://pair?data=" + base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
+
+def agent_elevated():
+    """The agent never elevates itself or bypasses Windows UAC."""
+    if os.name != "nt":
+        return False
+    return bool(ctypes.windll.shell32.IsUserAnAdmin())
+
+
+def process_elevated(pid):
+    """Read the window process UAC elevation state without termination rights."""
+    if os.name != "nt":
+        return None
+    kernel32 = ctypes.windll.kernel32
+    advapi32 = ctypes.windll.advapi32
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+        wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    process = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not process:
+        return None
+    token = wintypes.HANDLE()
+    try:
+        if not advapi32.OpenProcessToken(process, 0x0008, ctypes.byref(token)):
+            return None
+        elevated = wintypes.DWORD()
+        size = wintypes.DWORD()
+        # TokenElevation (20); TOKEN_ELEVATION.TokenIsElevated is DWORD.
+        if not advapi32.GetTokenInformation(token, 20, ctypes.byref(elevated),
+                                             ctypes.sizeof(elevated), ctypes.byref(size)):
+            return None
+        return bool(elevated.value)
+    finally:
+        if token:
+            kernel32.CloseHandle(token)
+        kernel32.CloseHandle(process)
+
+
+class WindowTracker:
+    """In-memory 2-second snapshots; closed history is not persisted to disk."""
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._current = {}
+        self._history = deque(maxlen=50)
+        self._started = False
+        self._revision = 0
+
+    def update(self, windows, now=None):
+        stamp = int(time.time()) if now is None else now
+        current = {(w["hwnd"], w["pid"]): dict(w) for w in windows}
+        with self._lock:
+            if self._started:
+                for key, win in self._current.items():
+                    if key not in current:
+                        self._history.appendleft({**win, "event": "closed", "time": stamp})
+                        self._revision += 1
+                for key, win in current.items():
+                    if key not in self._current:
+                        self._history.appendleft({**win, "event": "opened", "time": stamp})
+                        self._revision += 1
+            self._started = True
+            self._current = current
+
+    def snapshot(self):
+        with self._lock:
+            return {
+                "apps": list(self._current.values())[:150],
+                "recently_closed": [
+                    dict(e) for e in self._history if e["event"] == "closed"
+                ][:20],
+                "recently_opened": [
+                    dict(e) for e in self._history if e["event"] == "opened"
+                ][:20],
+                "revision": self._revision,
+                "refresh_seconds": 2,
+            }
+
+
+window_tracker = WindowTracker()
+
+
+def monitor_windows():
+    while True:
+        try:
+            window_tracker.update(window_list())
+        except Exception:
+            pass
+        time.sleep(2)
+
+
 def window_list():
     if os.name != "nt":
         return []
@@ -195,6 +292,7 @@ def window_list():
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if not pid.value or pid.value == os.getpid():
             return True
+        elevated = process_elevated(pid.value)
         name = "PID " + str(pid.value)
         # Query only PROCESS_QUERY_LIMITED_INFORMATION; no PROCESS_TERMINATE privilege.
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -212,7 +310,8 @@ def window_list():
             finally:
                 kernel32.CloseHandle(handle)
         result.append({"hwnd": format(int(hwnd), "x"),
-                       "pid": int(pid.value), "title": title[:250], "process": name[:100]})
+                       "pid": int(pid.value), "title": title[:250], "process": name[:100],
+                       "elevated": elevated})
         return True
 
     user32.EnumWindows(enumerate_window, 0)
@@ -229,12 +328,14 @@ def close_window(hwnd_text, expected_pid):
                       if w["hwnd"].lower() == hwnd_text.lower() and w["pid"] == expected_pid), None)
     if candidate is None:
         raise ValueError("Окно уже закрыто или изменилось")
+    if candidate.get("elevated") is True and not agent_elevated():
+        raise PermissionError("Окно запущено от администратора. Windows UAC запрещает обычному агенту закрывать его. Для этой задачи потребуется вручную запустить агент с правами администратора на самом ПК.")
     hwnd = int(hwnd_text, 16)
     user32 = ctypes.windll.user32
     user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     if not user32.PostMessageW(hwnd, WM_CLOSE, 0, 0):
         raise PermissionError("Не удалось отправить запрос закрытия; может потребоваться доступ")
-    return {"accepted": True, "message": "Запрошено обычное закрытие окна. Если есть несохранённые данные, программа может показать диалог сохранения на ПК."}
+    return {"accepted": True, "message": "Запрос закрытия отправлен. Ожидай обновления списка; если окно осталось открытым, проверь диалог сохранения на ПК."}
 
 
 def run_power(kind):
@@ -315,7 +416,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, {"ok": True, "version": VERSION, "computer": socket.gethostname(),
                              "pending_power": kind, "power_at": until})
         elif path == "/v1/apps":
-            self.reply(200, {"apps": window_list()})
+            self.reply(200, window_tracker.snapshot())
         else:
             self.reply(404, {"error": "Неизвестная команда"})
 
@@ -356,6 +457,8 @@ def start_server(token):
     tls.minimum_version = ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
     server.socket = tls.wrap_socket(server.socket, server_side=True)
+    window_tracker.update(window_list())
+    threading.Thread(target=monitor_windows, daemon=True).start()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
@@ -373,7 +476,7 @@ def main():
     from PIL import ImageTk
 
     root = tk.Tk()
-    root.title("DistanceUprav Agent 0.4.1")
+    root.title("DistanceUprav Agent 0.4.2")
     root.geometry("550x785")
     root.configure(bg="#111827")
     root.resizable(False, False)
