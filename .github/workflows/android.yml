@@ -36,6 +36,13 @@ jobs:
           "$SDKMANAGER" --version
           "$SDKMANAGER" --install "platforms;android-35" "build-tools;35.0.0"
 
+      - name: Restore persistent development signing key
+        shell: bash
+        run: |
+          base64 --decode app/debug-signing.keystore.b64 > app/debug.keystore
+          chmod 600 app/debug.keystore
+          keytool -list -keystore app/debug.keystore -storepass android -alias androiddebugkey >/dev/null
+
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
 
