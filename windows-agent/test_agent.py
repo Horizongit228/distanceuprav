@@ -93,6 +93,30 @@ class AgentTests(unittest.TestCase):
         self.assertFalse(agent._valid_lan_ipv4("8.8.8.8"))
         self.assertTrue(agent._valid_lan_ipv4("192.168.0.105"))
 
+
+    def test_window_tracker_records_opened_and_closed_events(self):
+        tracker = agent.WindowTracker()
+        first = {"hwnd": "42", "pid": 12, "title": "Editor", "process": "editor.exe", "elevated": False}
+        next_window = {"hwnd": "43", "pid": 13, "title": "Notepad", "process": "notepad.exe", "elevated": False}
+        tracker.update([first], now=100)
+        self.assertEqual(tracker.snapshot()["recently_closed"], [])
+        tracker.update([first, next_window], now=102)
+        self.assertEqual(tracker.snapshot()["recently_opened"][0]["title"], "Notepad")
+        tracker.update([next_window], now=104)
+        snapshot = tracker.snapshot()
+        self.assertEqual(snapshot["recently_closed"][0]["title"], "Editor")
+        self.assertEqual(snapshot["recently_closed"][0]["time"], 104)
+        self.assertEqual(snapshot["revision"], 2)
+
+    def test_elevated_window_does_not_bypass_uac(self):
+        target = {"hwnd": "a1", "pid": 1234, "title": "Administrator: CMD",
+                  "process": "cmd.exe", "elevated": True}
+        with patch.object(agent, "window_list", return_value=[target]):
+            with patch.object(agent, "agent_elevated", return_value=False):
+                with self.assertRaises(PermissionError) as context:
+                    agent.close_window("a1", 1234)
+                self.assertIn("Windows UAC", str(context.exception))
+
     def test_window_validation_rejects_malformed_input(self):
         with self.assertRaises(ValueError):
             agent.close_window("not-hex", 100)
