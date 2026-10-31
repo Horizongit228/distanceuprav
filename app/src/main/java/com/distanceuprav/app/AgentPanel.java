@@ -256,8 +256,8 @@ public final class AgentPanel extends LinearLayout {
         if (!quiet) feedback("⏳ Обновляю список окон…", WHITE);
         worker.execute(() -> {
             try {
-                JSONObject state = AgentClient.request(cfg, "GET", "/v1/status", null);
-                JSONObject response = AgentClient.request(cfg, "GET", "/v1/apps", null);
+                JSONObject state = AgentClient.request(activity.getApplicationContext(), cfg, "GET", "/v1/status", null);
+                JSONObject response = AgentClient.request(activity.getApplicationContext(), cfg, "GET", "/v1/apps", null);
                 JSONArray apps = response.optJSONArray("apps");
                 JSONArray recentlyClosed = response.optJSONArray("recently_closed");
                 int revision = response.optInt("revision", 0);
@@ -386,7 +386,7 @@ public final class AgentPanel extends LinearLayout {
         feedback("⏳ Отправляю команду…", WHITE);
         worker.execute(() -> {
             try {
-                JSONObject response = AgentClient.request(cfg, "POST", path, body);
+                JSONObject response = AgentClient.request(activity.getApplicationContext(), cfg, "POST", path, body);
                 ui(() -> {
                     feedback("✓ " + response.optString("message", description), SUCCESS);
                     if ("/v1/apps/close".equals(path)) {
