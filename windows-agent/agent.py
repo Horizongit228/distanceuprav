@@ -313,7 +313,7 @@ def main():
 
     root = tk.Tk()
     root.title("DistanceUprav Agent 0.4.0")
-    root.geometry("510x610")
+    root.geometry("540x760")
     root.configure(bg="#111827")
     root.resizable(False, False)
 
@@ -327,7 +327,7 @@ def main():
     label("Работает в активном сеансе Windows. Только домашняя сеть.", 10, "#A5B4CF")
     label("IP: " + ip + "     Порт: " + str(PORT), 12, "#99F6E4")
 
-    qr = qrcode.QRCode(border=2, box_size=6, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    qr = qrcode.QRCode(border=2, box_size=4, error_correction=qrcode.constants.ERROR_CORRECT_M)
     qr.add_data(url)
     qr.make(fit=True)
     photo = ImageTk.PhotoImage(qr.make_image(fill_color="black", back_color="white").convert("RGB"))

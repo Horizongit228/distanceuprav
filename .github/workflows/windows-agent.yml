@@ -20,6 +20,8 @@ jobs:
         run: python -m pip install -r windows-agent/requirements.txt
       - name: Syntax check
         run: python -m py_compile windows-agent/agent.py
+      - name: Run security and API smoke tests
+        run: python -m unittest discover -s windows-agent -p "test_*.py" -v
       - name: Package Windows EXE
         run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name DistanceUpravAgent --collect-all cryptography --collect-all qrcode windows-agent/agent.py
       - uses: actions/upload-artifact@v4
