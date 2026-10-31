@@ -17,6 +17,7 @@ import java.net.*;
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends Activity {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -48,12 +49,12 @@ public class MainActivity extends Activity {
         mac=field(root,"AA:BB:CC:DD:EE:FF",pref("mac",""),8);
         add(root,text("IP-адрес компьютера",14,0xFFD8E1F5),20);
         host=field(root,"192.168.1.100",pref("host",""),8);
-        add(root,text("TCP-порт для проверки доступности",14,0xFFD8E1F5),20);
+        add(root,text("TCP-порт (дополнительная диагностика)",14,0xFFD8E1F5),20);
         port=field(root,"3389",pref("port","3389"),8); port.setInputType(2);
-        TextView note=text("Проверка TCP показывает доступность выбранного порта, а не факт включения ПК. При закрытом порте результат может быть неопределённым.",12,0xFF9BA8C5); add(root,note,14);
+        TextView note=text("Сначала приложение отправляет ping, затем проверяет TCP-порт. Закрытый порт 3389 — это нормально, если удалённый рабочий стол Windows выключен. Отсутствие ответа не доказывает, что ПК выключен.",12,0xFF9BA8C5); add(root,note,14);
         Button power=button("⏻  Включить компьютер",accent); add(root,power,30);
         Button check=button("◎  Проверить доступность",panel); add(root,check,10);
-        result=text("Нажми кнопку, чтобы проверить TCP-порт ПК.",14,0xFFD8E1F5);
+        result=text("Нажми кнопку: проверим ping и TCP-порт компьютера.",14,0xFFD8E1F5);
         result.setMinHeight(dp(56));
         result.setPadding(dp(14),dp(14),dp(14),dp(14));
         result.setBackground(shape(panel,14));
@@ -67,33 +68,51 @@ public class MainActivity extends Activity {
             String h=host.getText().toString().trim();
             String p=port.getText().toString().trim();
             if(h.isEmpty()) {
-                result.setText("⚠ Укажи IP-адрес компьютера, затем повтори проверку.");
+                result.setText("⚠ Укажи IP-адрес ПК. В Windows выполни ipconfig и найди IPv4.");
                 return;
             }
             final int pn;
             try {
                 pn=Integer.parseInt(p);
-                if(pn<1||pn>65535) throw new NumberFormatException();
+                if(pn<1 || pn>65535) throw new NumberFormatException();
             } catch(NumberFormatException e) {
                 result.setText("⚠ TCP-порт должен быть числом от 1 до 65535.");
                 return;
             }
-            result.setText("⏳ Проверяю " + h + ":" + pn + "…");
+            result.setText("⏳ Проверяю ping и TCP для " + h + "…");
             check.setEnabled(false);
-            Toast.makeText(this,"Проверка началась",Toast.LENGTH_SHORT).show();
             worker.execute(() -> {
-                String message;
-                try(Socket s=new Socket()) {
-                    s.connect(new InetSocketAddress(h,pn),2500);
-                    message="✓ TCP-порт "+pn+" доступен. ПК отвечает на подключение.";
+                boolean pingOk=ping(h);
+                boolean tcpOpen=false;
+                boolean tcpRefused=false;
+                String tcpDetail="Порт " + pn + " не отвечает.";
+                try(Socket socket=new Socket()) {
+                    socket.connect(new InetSocketAddress(h,pn),1800);
+                    tcpOpen=true;
+                    tcpDetail="TCP-порт "+pn+" открыт.";
                 } catch(ConnectException e) {
-                    message="⚠ Соединение отклонено на порту "+pn+". ПК может быть включён, но порт закрыт.";
-                } catch(SocketTimeoutException e) {
-                    message="⌛ Нет ответа за 2,5 секунды. ПК может быть выключен или соединение блокируется.";
+                    if(e.getMessage()!=null && e.getMessage().toLowerCase(java.util.Locale.ROOT).contains("refused")) {
+                        tcpRefused=true;
+                        tcpDetail="TCP-порт "+pn+" закрыт (соединение отклонено).";
+                    } else {
+                        tcpDetail="Ошибка TCP-подключения: "+e.getMessage();
+                    }
                 } catch(UnknownHostException e) {
-                    message="⚠ IP-адрес или имя компьютера не найдено. Проверь адрес.";
+                    tcpDetail="Не удалось найти указанный IP-адрес или имя ПК.";
+                } catch(SocketTimeoutException e) {
+                    tcpDetail="TCP-порт "+pn+" не ответил за 1,8 секунды.";
                 } catch(Exception e) {
-                    message="⚠ Ошибка сети ("+e.getClass().getSimpleName()+"): "+e.getMessage();
+                    tcpDetail="Ошибка TCP: "+e.getClass().getSimpleName()+".";
+                }
+                String message;
+                if(pingOk) {
+                    message="✅ ПК отвечает на ping — устройство доступно в сети.\n"+tcpDetail;
+                } else if(tcpOpen) {
+                    message="✅ ПК отвечает через TCP. Ping не получил ответа (возможно, ICMP заблокирован).\n"+tcpDetail;
+                } else if(tcpRefused) {
+                    message="🟡 TCP-соединение отклонено: устройство, вероятно, доступно, но порт закрыт. Ping не ответил.\n"+tcpDetail;
+                } else {
+                    message="⚠ Не удалось подтвердить доступность компьютера. Это НЕ означает, что он выключен. Проверь IPv4, одну Wi-Fi/LAN сеть и разрешение ICMP Echo в брандмауэре Windows.\n"+tcpDetail;
                 }
                 final String response=message;
                 main.post(() -> {
@@ -104,6 +123,22 @@ public class MainActivity extends Activity {
         });
         setContentView(scroll);
     }
+    // Android's system ping sends an ICMP echo without requiring a Windows service.
+    // A failed ping alone cannot establish that a PC is powered off.
+    private static boolean ping(String address) {
+        Process process=null;
+        try {
+            process=new ProcessBuilder("/system/bin/ping","-c","1","-W","2",address)
+                    .redirectErrorStream(true).start();
+            if(!process.waitFor(3500,TimeUnit.MILLISECONDS)) return false;
+            return process.exitValue()==0;
+        } catch(Exception e) {
+            return false;
+        } finally {
+            if(process!=null) process.destroy();
+        }
+    }
+
     private static byte[] packet(String mac) {
         String clean=mac.replace(":","").replace("-","").replace(" ","");
         if(!clean.matches("[0-9a-fA-F]{12}")) throw new IllegalArgumentException("MAC должен содержать 12 шестнадцатеричных символов");
