@@ -67,6 +67,7 @@ public class MainActivity extends Activity {
     private TextView settingsToggle, advancedToggle;
     private LinearLayout settingsBody, advancedBody;
     private Button powerButton, checkButton;
+    private AgentPanel agentPanel;
     private boolean settingsOpen, advancedOpen;
 
     private final Runnable statusLoop = new Runnable() {
@@ -286,6 +287,9 @@ public class MainActivity extends Activity {
             refreshNetwork();
             setAction("✓ Информация о локальной сети обновлена.", SUCCESS);
         });
+
+        agentPanel = new AgentPanel(this);
+        add(root, agentPanel, 16);
 
         LinearLayout settingsCard = card(17);
         add(root, settingsCard, 16);
@@ -581,6 +585,7 @@ public class MainActivity extends Activity {
     @Override protected void onDestroy() {
         main.removeCallbacksAndMessages(null);
         worker.shutdownNow();
+        if (agentPanel != null) agentPanel.shutdown();
         super.onDestroy();
     }
 }
