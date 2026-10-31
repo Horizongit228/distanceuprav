@@ -8,8 +8,8 @@ android {
         applicationId 'com.distanceuprav.app'
         minSdk 26
         targetSdk 28
-        versionCode 7
-        versionName '0.3.0'
+        versionCode 8
+        versionName '0.4.0'
     }
 
     // Development builds are signed with a persistent *public debug key*.

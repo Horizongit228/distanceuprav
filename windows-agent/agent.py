@@ -135,6 +135,9 @@ def window_list():
             return True
         name = "PID " + str(pid.value)
         # Query only PROCESS_QUERY_LIMITED_INFORMATION; no PROCESS_TERMINATE privilege.
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         handle = kernel32.OpenProcess(0x1000, False, pid.value)
         if handle:
             try:
