@@ -1,7 +1,9 @@
 package com.distanceuprav.app;
 
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.os.Handler;
+import android.os.Looper;
+import java.util.concurrent.atomic.AtomicBoolean;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -47,6 +49,21 @@ public final class AgentPanel extends LinearLayout {
     private final LinearLayout actions;
     private final Button refreshButton;
     private volatile boolean closed;
+    private boolean foreground;
+    private boolean agentElevated;
+    private int lastRevision = -1;
+    private final AtomicBoolean loading = new AtomicBoolean(false);
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable poll = new Runnable() {
+        @Override public void run() {
+            if (!closed && foreground) {
+                if (store.read() != null) loadApps(true);
+                handler.postDelayed(this, 5000);
+            }
+        }
+    };
+    private final LinearLayout closedList;
+    private final TextView liveInfo;
 
     private int dp(int px) {
         return Math.round(px * getResources().getDisplayMetrics().density);
@@ -111,7 +128,7 @@ public final class AgentPanel extends LinearLayout {
         setPadding(dp(17),dp(17),dp(17),dp(17));
         setBackground(shape(SURFACE, 22, 0xFF29364D));
 
-        add(this, text("WINDOWS AGENT · v0.4", 12, MUTED, true), 0);
+        add(this, text("WINDOWS AGENT · LIVE", 12, MUTED, true), 0);
         add(this, text("Удалённое управление программами", 19, WHITE, true), 8);
         add(this, text("Список открытых окон, выборочное закрытие, выключение и перезапуск ПК. Только домашняя сеть, HTTPS и QR-привязка.", 12, MUTED, false), 9);
 
@@ -136,7 +153,9 @@ public final class AgentPanel extends LinearLayout {
 
         actions = column();
         add(this, actions, 8);
-        TextView info = text("Закрытие не принудительное. Если документ не сохранён, Windows-приложение может показать диалог сохранения непосредственно на компьютере.", 12, WARNING, false);
+        TextView info = text("⚠  Важно: изменения сохраняет сама программа. Если появится запрос «Сохранить?», подтверди его на компьютере. Принудительного закрытия нет.", 12, WARNING, false);
+        info.setPadding(dp(14), dp(12), dp(14), dp(12));
+        info.setBackground(shape(0xFF312B37, 14, 0xFF665064));
         add(actions, info, 10);
 
         Button off = button("⏻  Выключить компьютер", 0xFF47334E);
@@ -150,8 +169,12 @@ public final class AgentPanel extends LinearLayout {
         cancel.setOnClickListener(v -> sendAction("/v1/power/cancel", new JSONObject(), "Запрос отмены отправлен."));
         actions.setVisibility(GONE);
 
+        liveInfo = text("↻ Автообновление каждые 5 секунд", 12, MUTED, false);
+        add(this, liveInfo, 12);
         list = column();
         add(this, list, 12);
+        closedList = column();
+        add(this, closedList, 16);
         updatePairState();
     }
 
@@ -162,11 +185,12 @@ public final class AgentPanel extends LinearLayout {
             actions.setVisibility(GONE);
             refreshButton.setVisibility(GONE);
             list.removeAllViews();
+            closedList.removeAllViews();
         } else {
             endpoint.setText("Защищённое подключение: " + cfg.ip + ":" + cfg.port);
             refreshButton.setVisibility(VISIBLE);
             actions.setVisibility(VISIBLE);
-            feedback("Агент привязан. Нажми «Обновить список программ».", SUCCESS);
+            feedback("Агент привязан. Список обновляется автоматически.", SUCCESS);
         }
     }
 
@@ -206,30 +230,64 @@ public final class AgentPanel extends LinearLayout {
         }
     }
 
+    public void onForeground() {
+        foreground = true;
+        handler.removeCallbacks(poll);
+        handler.post(poll);
+    }
+
+    public void onBackground() {
+        foreground = false;
+        handler.removeCallbacks(poll);
+    }
+
     private void loadApps() {
+        loadApps(false);
+    }
+
+    private void loadApps(boolean quiet) {
         AgentStore.Config cfg = store.read();
         if (cfg == null) {
-            feedback("Сначала подключи Windows-агент по QR.", WARNING);
+            if (!quiet) feedback("Сначала подключи Windows-агент по QR.", WARNING);
             return;
         }
+        if (!loading.compareAndSet(false, true)) return;
         refreshButton.setEnabled(false);
-        feedback("⏳ Связываюсь с Windows-агентом через HTTPS…", WHITE);
+        if (!quiet) feedback("⏳ Обновляю список окон…", WHITE);
         worker.execute(() -> {
             try {
                 JSONObject state = AgentClient.request(cfg, "GET", "/v1/status", null);
                 JSONObject response = AgentClient.request(cfg, "GET", "/v1/apps", null);
                 JSONArray apps = response.optJSONArray("apps");
+                JSONArray recentlyClosed = response.optJSONArray("recently_closed");
+                int revision = response.optInt("revision", 0);
+                boolean elevated = state.optBoolean("agent_elevated", false);
                 String name = state.optString("computer", "ПК");
                 ui(() -> {
+                    loading.set(false);
                     refreshButton.setEnabled(true);
-                    feedback("✓ Windows-агент подключён: " + name + ". Открытых окон: " + (apps == null ? 0 : apps.length()), SUCCESS);
-                    renderApps(apps);
+                    agentElevated = elevated;
+                    if (lastRevision != revision || !quiet) {
+                        renderApps(apps);
+                        renderClosed(recentlyClosed);
+                        lastRevision = revision;
+                    }
+                    liveInfo.setText("● Онлайн  ·  Обновление каждые 5 с  ·  Агент " +
+                            (elevated ? "администратор" : "обычный пользователь"));
+                    if (!quiet || !status.getText().toString().contains("✓ Windows-агент")) {
+                        feedback("✓ Windows-агент: " + name + " · открытых окон: " +
+                                (apps == null ? 0 : apps.length()), SUCCESS);
+                    }
                 });
             } catch(Exception e) {
                 ui(() -> {
+                    loading.set(false);
                     refreshButton.setEnabled(true);
-                    list.removeAllViews();
-                    feedback("⚠ Нет подключения к агенту. Проверь, что программа запущена на ПК, обе стороны в одной сети и порт 8765 разрешён для частной сети. " + safeError(e), WARNING);
+                    liveInfo.setText("○ Нет связи · повторная попытка через 5 с");
+                    if (!quiet || lastRevision >= 0) {
+                        feedback("⚠ Нет подключения к агенту: " + safeError(e), WARNING);
+                    }
+                    lastRevision = -1;
                 });
             }
         });
@@ -237,7 +295,7 @@ public final class AgentPanel extends LinearLayout {
 
     private void renderApps(JSONArray apps) {
         list.removeAllViews();
-        add(list, text("ОТКРЫТЫЕ ОКНА WINDOWS", 12, MUTED, true), 5);
+        add(list, text("● ОТКРЫТЫЕ ОКНА WINDOWS", 12, SUCCESS, true), 5);
         if (apps == null || apps.length() == 0) {
             add(list, text("Открытых окон не найдено. Агент должен работать в пользовательском сеансе Windows.", 12, MUTED, false), 10);
             return;
@@ -250,44 +308,73 @@ public final class AgentPanel extends LinearLayout {
             String process = app.optString("process", "");
             String hwnd = app.optString("hwnd");
             int pid = app.optInt("pid", -1);
+            boolean elevated = app.optBoolean("elevated", false);
             LinearLayout block = column();
             block.setPadding(dp(12),dp(12),dp(12),dp(12));
             block.setBackground(shape(SURFACE2, 14, 0));
             add(block, text(title, 14, WHITE, true), 0);
             add(block, text(process + "  ·  PID " + pid, 11, MUTED, false), 4);
+            if (elevated) add(block, text("⚠ Запущено от администратора", 12, WARNING, true), 6);
             Button close = button("×  Закрыть окно", 0xFF4A3547);
             close.setTextSize(12);
             add(block, close, 8);
-            close.setOnClickListener(v -> confirmClose(hwnd, pid, title));
+            close.setOnClickListener(v -> confirmClose(hwnd, pid, title, elevated));
             add(list, block, 10);
         }
     }
 
-    private void confirmClose(String hwnd, int pid, String title) {
-        new AlertDialog.Builder(activity)
-                .setTitle("Закрыть выбранное окно?")
-                .setMessage(title + "\n\nБудет отправлена обычная команда закрытия. Если есть несохранённые изменения, программа может предложить сохранить их НА КОМПЬЮТЕРЕ. Агент не применяет принудительное завершение и не может гарантировать автоматическое сохранение.")
-                .setNegativeButton("Отмена", null)
-                .setPositiveButton("Закрыть", (dialog, which) -> {
+    private void renderClosed(JSONArray closedWindows) {
+        closedList.removeAllViews();
+        add(closedList, text("○ НЕДАВНО ЗАКРЫТЫЕ ОКНА", 12, MUTED, true), 0);
+        if (closedWindows == null || closedWindows.length() == 0) {
+            add(closedList, text("Пока закрытых окон не обнаружено. История ведётся со времени запуска Windows-агента.", 12, MUTED, false), 10);
+            return;
+        }
+        for(int i = 0; i < Math.min(15, closedWindows.length()); i++) {
+            JSONObject app = closedWindows.optJSONObject(i);
+            if (app == null) continue;
+            LinearLayout box = column();
+            box.setPadding(dp(12), dp(10), dp(12), dp(10));
+            box.setBackground(shape(0xFF192238, 13, 0));
+            add(box, text("✓  " + app.optString("title", "Окно закрыто"), 13, WHITE, true), 0);
+            long time = app.optLong("time", 0L);
+            String when = time > 0 ? android.text.format.DateFormat.getTimeFormat(activity)
+                    .format(new java.util.Date(time * 1000L)) : "";
+            add(box, text(app.optString("process", "") + "  ·  " + when, 11, MUTED, false), 4);
+            add(closedList, box, 8);
+        }
+    }
+
+    private void confirmClose(String hwnd, int pid, String title, boolean elevated) {
+        if (elevated && !agentElevated) {
+            StyledConfirm.show(activity, "Нужны права администратора",
+                    "Это окно запущено с повышенными правами. Обычный Windows-агент не может закрыть его из-за защиты UAC.\n\n" +
+                    "При необходимости можно вручную запустить Windows-агент от администратора на ПК, подтвердив запрос UAC. Это повышает права всех разрешённых удалённых команд — используй только в доверенной домашней сети.",
+                    "Понятно", false, () -> {});
+            return;
+        }
+        StyledConfirm.show(activity, "Закрыть выбранное окно?",
+                title + "\n\nПрограмма получит обычный запрос закрытия. Если документ не сохранён, диалог «Сохранить?» появится на компьютере. Агент не завершает процесс принудительно.",
+                "Закрыть окно", true, () -> {
                     JSONObject body = new JSONObject();
                     try {
                         body.put("hwnd", hwnd);
                         body.put("pid", pid);
-                        sendAction("/v1/apps/close", body, "Запрос мягкого закрытия отправлен. Если программа запросит сохранение, подтверди его на ПК.");
+                        sendAction("/v1/apps/close", body,
+                                "Запрос закрытия отправлен. Ожидаем изменения списка.");
                     } catch(Exception e) {
                         feedback("Ошибка: " + safeError(e), WARNING);
                     }
-                }).show();
+                });
     }
 
     private void confirmPower(String kind, String caption) {
-        new AlertDialog.Builder(activity)
-                .setTitle(caption + "?")
-                .setMessage("После подтверждения агент запланирует действие на 10 секунд. Его можно отменить кнопкой в приложении. Windows НЕ будет принудительно закрывать программы (/f не используется). Если есть несохранённые изменения, компьютер может показать запрос сохранения и заблокировать выключение или перезапуск.")
-                .setNegativeButton("Отмена", null)
-                .setPositiveButton("Подтвердить", (dialog, which) ->
-                        sendAction("/v1/power/" + kind, new JSONObject(),
-                                "Команда принята. Через 10 секунд Windows попробует выполнить действие.")).show();
+        StyledConfirm.show(activity, caption + "?",
+                "Через 10 секунд Windows попробует выполнить действие. Команду можно отменить до её начала.\n\n" +
+                "Программы не закрываются принудительно. При несохранённых данных компьютер может показать диалог и заблокировать выключение.",
+                "Подтвердить", true,
+                () -> sendAction("/v1/power/" + kind, new JSONObject(),
+                        "Команда принята. Осталось 10 секунд."));
     }
 
     private void sendAction(String path, JSONObject body, String description) {
@@ -300,7 +387,12 @@ public final class AgentPanel extends LinearLayout {
         worker.execute(() -> {
             try {
                 JSONObject response = AgentClient.request(cfg, "POST", path, body);
-                ui(() -> feedback("✓ " + response.optString("message", description), SUCCESS));
+                ui(() -> {
+                    feedback("✓ " + response.optString("message", description), SUCCESS);
+                    if ("/v1/apps/close".equals(path)) {
+                        handler.postDelayed(() -> loadApps(true), 2300);
+                    }
+                });
             } catch(Exception e) {
                 ui(() -> feedback("⚠ Команда не выполнена: " + safeError(e), WARNING));
             }
@@ -314,6 +406,7 @@ public final class AgentPanel extends LinearLayout {
 
     public void shutdown() {
         closed = true;
+        handler.removeCallbacksAndMessages(null);
         worker.shutdownNow();
     }
 }
