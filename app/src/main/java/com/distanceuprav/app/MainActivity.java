@@ -43,7 +43,7 @@ public class MainActivity extends Activity {
         TextView title=text("⚡ DistanceUprav",28,Color.WHITE); title.setTypeface(null,Typeface.BOLD); add(root,title,0);
         TextView subtitle=text("Управление домашним компьютером",14,0xFF9BA8C5); add(root,subtitle,8);
         TextView name=text("🖥  Мой компьютер",21,Color.WHITE); name.setTypeface(null,Typeface.BOLD); add(root,name,35);
-        result=text("Состояние ещё не проверено",14,0xFF9BA8C5); add(root,result,12);
+        TextView hint=text("Настрой подключение и проверь доступность ПК.",14,0xFF9BA8C5); add(root,hint,12);
         add(root,text("MAC-адрес Ethernet",14,0xFFD8E1F5),30);
         mac=field(root,"AA:BB:CC:DD:EE:FF",pref("mac",""),8);
         add(root,text("IP-адрес компьютера",14,0xFFD8E1F5),20);
@@ -53,14 +53,55 @@ public class MainActivity extends Activity {
         TextView note=text("Проверка TCP показывает доступность выбранного порта, а не факт включения ПК. При закрытом порте результат может быть неопределённым.",12,0xFF9BA8C5); add(root,note,14);
         Button power=button("⏻  Включить компьютер",accent); add(root,power,30);
         Button check=button("◎  Проверить доступность",panel); add(root,check,10);
+        result=text("Нажми кнопку, чтобы проверить TCP-порт ПК.",14,0xFFD8E1F5);
+        result.setMinHeight(dp(56));
+        result.setPadding(dp(14),dp(14),dp(14),dp(14));
+        result.setBackground(shape(panel,14));
+        add(root,result,12);
         power.setOnClickListener(v -> {save(); String m=mac.getText().toString().trim(); worker.execute(() -> {
             try { byte[] packet=packet(m); send(packet); update("✓ Magic Packet отправлен трижды. Ожидай запуска компьютера."); }
             catch(Exception e) {update("Ошибка Wake-on-LAN: "+e.getMessage());}
         });});
-        check.setOnClickListener(v -> {save(); String h=host.getText().toString().trim(), p=port.getText().toString().trim(); worker.execute(() -> {
-            try { if(h.isEmpty()) throw new IllegalArgumentException("Укажи IP компьютера"); int pn=Integer.parseInt(p); if(pn<1||pn>65535) throw new IllegalArgumentException("Неверный порт"); try(Socket s=new Socket()) {s.connect(new InetSocketAddress(h,pn),1600); update("✓ TCP-порт доступен — компьютер отвечает");}}
-            catch(Exception e) {update("Нет ответа от TCP-порта. Компьютер может быть выключен, порт закрыт или сеть недоступна.");}
-        });});
+        check.setOnClickListener(v -> {
+            save();
+            String h=host.getText().toString().trim();
+            String p=port.getText().toString().trim();
+            if(h.isEmpty()) {
+                result.setText("⚠ Укажи IP-адрес компьютера, затем повтори проверку.");
+                return;
+            }
+            final int pn;
+            try {
+                pn=Integer.parseInt(p);
+                if(pn<1||pn>65535) throw new NumberFormatException();
+            } catch(NumberFormatException e) {
+                result.setText("⚠ TCP-порт должен быть числом от 1 до 65535.");
+                return;
+            }
+            result.setText("⏳ Проверяю " + h + ":" + pn + "…");
+            check.setEnabled(false);
+            Toast.makeText(this,"Проверка началась",Toast.LENGTH_SHORT).show();
+            worker.execute(() -> {
+                String message;
+                try(Socket s=new Socket()) {
+                    s.connect(new InetSocketAddress(h,pn),2500);
+                    message="✓ TCP-порт "+pn+" доступен. ПК отвечает на подключение.";
+                } catch(ConnectException e) {
+                    message="⚠ Соединение отклонено на порту "+pn+". ПК может быть включён, но порт закрыт.";
+                } catch(SocketTimeoutException e) {
+                    message="⌛ Нет ответа за 2,5 секунды. ПК может быть выключен или соединение блокируется.";
+                } catch(UnknownHostException e) {
+                    message="⚠ IP-адрес или имя компьютера не найдено. Проверь адрес.";
+                } catch(Exception e) {
+                    message="⚠ Ошибка сети ("+e.getClass().getSimpleName()+"): "+e.getMessage();
+                }
+                final String response=message;
+                main.post(() -> {
+                    result.setText(response);
+                    check.setEnabled(true);
+                });
+            });
+        });
         setContentView(scroll);
     }
     private static byte[] packet(String mac) {
